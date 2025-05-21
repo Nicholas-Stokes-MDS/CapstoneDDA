@@ -18,7 +18,7 @@ ACapstoneCharacter::ACapstoneCharacter()
 {
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
-		
+
 	// Don't rotate when the controller rotates. Let that just affect the camera.
 	bUseControllerRotationPitch = false;
 	bUseControllerRotationYaw = false;
@@ -36,29 +36,38 @@ ACapstoneCharacter::ACapstoneCharacter()
 	GetCharacterMovement()->MinAnalogWalkSpeed = 20.f;
 	GetCharacterMovement()->BrakingDecelerationWalking = 2000.f;
 
-	// Create a camera boom (pulls in towards the player if there is a collision)
+	// Create a camera boom (optional for offset)
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
-	CameraBoom->TargetArmLength = 400.0f; // The camera follows at this distance behind the character	
-	CameraBoom->bUsePawnControlRotation = true; // Rotate the arm based on the controller
+	CameraBoom->SetRelativeRotation(FRotator(-45.f, 45.f, 0.f)); // Point camera straight down
+	CameraBoom->bUsePawnControlRotation = false; // Disable controller rotation
+	CameraBoom->bInheritPitch = false;
+	CameraBoom->bInheritYaw = false;
+	CameraBoom->bInheritRoll = false;
+	CameraBoom->bDoCollisionTest = false;
+	//CameraBoom->SocketOffset = FVector(0.f, 0.f, 1000.f); // Pull camera up in Z
 
-	// Create a follow camera
+
+	// Create an orthographic camera
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
-	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName); // Attach the camera to the end of the boom and let the boom adjust to match the controller orientation
-	FollowCamera->bUsePawnControlRotation = false; // Camera does not rotate relative to arm
+	FollowCamera->SetupAttachment(CameraBoom);
+	FollowCamera->bUsePawnControlRotation = false;
+	FollowCamera->ProjectionMode = ECameraProjectionMode::Orthographic;
 
-	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
-	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
+	CameraBoom->TargetArmLength = 4000.0f;
+	FollowCamera->OrthoWidth = 2048.0f; // Increase to keep the scene visible
 }
 
 void ACapstoneCharacter::BeginPlay()
 {
-	// Call the base class  
 	Super::BeginPlay();
 
-	//Add Input Mapping Context
 	if (APlayerController* PlayerController = Cast<APlayerController>(Controller))
 	{
+		PlayerController->bShowMouseCursor = true;
+		PlayerController->bEnableClickEvents = true;
+		PlayerController->bEnableMouseOverEvents = true;
+
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
 		{
 			Subsystem->AddMappingContext(DefaultMappingContext, 0);
@@ -95,35 +104,63 @@ void ACapstoneCharacter::Move(const FInputActionValue& Value)
 
 	if (Controller != nullptr)
 	{
-		// find out which way is forward
-		const FRotator Rotation = Controller->GetControlRotation();
-		const FRotator YawRotation(0, Rotation.Yaw, 0);
+		// Get camera forward and right vectors
+		FRotator CameraRotation = FollowCamera->GetComponentRotation();
+		FRotator YawRotation(0, CameraRotation.Yaw, 0); // Only use yaw
 
-		// get forward vector
-		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
-	
-		// get right vector 
-		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+		const FVector Forward = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		const FVector Right = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
 
-		// add movement 
-		AddMovementInput(ForwardDirection, MovementVector.Y);
-		AddMovementInput(RightDirection, MovementVector.X);
+		// Apply movement input relative to camera rotation
+		AddMovementInput(Forward, MovementVector.Y);
+		AddMovementInput(Right, MovementVector.X);
 	}
 }
 
 void ACapstoneCharacter::Look(const FInputActionValue& Value)
 {
-	// input is a Vector2D
-	FVector2D LookAxisVector = Value.Get<FVector2D>();
+	//// input is a Vector2D
+	//FVector2D LookAxisVector = Value.Get<FVector2D>();
 
-	if (Controller != nullptr)
-	{
-		// add yaw and pitch input to controller
-		AddControllerYawInput(LookAxisVector.X);
-		AddControllerPitchInput(LookAxisVector.Y);
-	}
+	//if (Controller != nullptr)
+	//{
+	//	// add yaw and pitch input to controller
+	//	AddControllerYawInput(LookAxisVector.X);
+	//	AddControllerPitchInput(LookAxisVector.Y);
+	//}
 }
 
 
 
 
+void ACapstoneCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	AimTowardMouse();
+}
+
+void ACapstoneCharacter::AimTowardMouse()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) return;
+
+	FVector WorldLocation, WorldDirection;
+	if (PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+	{
+		// Project the direction onto a plane (XY) at character height (Z)
+		FVector CharacterLocation = GetActorLocation();
+		float Distance = (CharacterLocation.Z - WorldLocation.Z) / WorldDirection.Z;
+		FVector MouseWorldPosition = WorldLocation + WorldDirection * Distance;
+
+		// Calculate direction to look at
+		FVector Direction = MouseWorldPosition - CharacterLocation;
+		Direction.Z = 0; // Only rotate in the XY plane
+
+		if (!Direction.IsNearlyZero())
+		{
+			FRotator NewRotation = Direction.Rotation();
+			SetActorRotation(NewRotation);
+		}
+	}
+}
